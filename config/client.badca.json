@@ -1,0 +1,29 @@
+{
+  "_comment": "Negative test: foreign CA -> TLS verification must fail (authentication, slow retry). Used by tools/integration_test.sh; /tmp/badca.crt is created there.",
+
+  "device": {
+    "host": "test-server",
+    "port": 4443,
+    "path": "/ws"
+  },
+
+  "tls": {
+    "ca_file": "/tmp/badca.crt",
+    "client_cert_file": "/certs/clients/service-laptop-01.crt",
+    "client_key_file": "/certs/clients/service-laptop-01.key",
+    "verify_peer": true,
+    "use_mtls": true,
+    "verify_hostname": "off"
+  },
+
+  "connection": {
+    "auto_reconnect": true,
+    "connect_timeout_s": 5,
+    "reconnect_initial_s": 1,
+    "reconnect_max_s": 30
+  },
+
+  "logging": {
+    "level": "debug"
+  }
+}

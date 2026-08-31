@@ -1,0 +1,123 @@
+# fountainer_client_framework — client application + local mTLS test server.
+#
+# Mounts:
+#   .                    -> /app    source code + configuration (vboxsf)
+#   ../DO_NOT_COMMIT/CA  -> /certs  testbed PKI (read-only, never commit)
+#   fcf_build (Volume)   -> /app/build
+#     Named volume instead of bind mount: the vboxsf share loses exec bits,
+#     so the built binary would not be executable there.
+#
+# Typical invocations:
+#   docker compose build
+#   docker compose up -d test-server
+#   docker compose run --rm client build     # compile only
+#   docker compose run --rm client test      # unit tests (ctest)
+#   docker compose up client                 # build + run against test-server
+#   CLIENT_CONFIG=/app/config/client.fnt-000001.json docker compose up client  # devkit
+
+services:
+  client:
+    build: .
+    image: fountainer_client
+    container_name: fountainer_client
+    working_dir: /app
+    volumes:
+      - .:/app
+      - fcf_build:/app/build
+      - ../DO_NOT_COMMIT/CA:/certs:ro
+      # HMAC keys of the devices (fountain.hmac_key_file) — read-only, never in the repo
+      - ../DO_NOT_COMMIT/production_secrets:/secrets:ro
+    environment:
+      CLIENT_CONFIG: ${CLIENT_CONFIG:-/app/config/client.docker.json}
+      BUILD_TYPE: ${BUILD_TYPE:-Debug}
+    entrypoint: ["bash", "docker/entrypoint.sh"]
+    command: ["run"]
+    # SIGINT should trigger the clean shutdown before Docker sends SIGKILL
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+
+  # --- Multi-client test campaign (CAUTION: the local server now has only
+  # 1 slot, LOCAL_SERVER_MAX_CLIENTS=1 — clients run ONE AFTER ANOTHER) -----
+  # First build ONCE: docker compose run --rm client build
+  # Then e.g.:  docker compose up client_reader
+  # All share the fcf_build volume -> "runonly" does NOT build (no races).
+  # "script" plays back fountain.sequence of the respective config.
+  client_reader:
+    image: fountainer_client
+    container_name: fnt_client_reader
+    working_dir: /app
+    volumes: &fnt_client_volumes
+      - .:/app
+      - fcf_build:/app/build
+      - ../DO_NOT_COMMIT/CA:/certs:ro
+      - ../DO_NOT_COMMIT/production_secrets:/secrets:ro
+    environment:
+      CLIENT_CONFIG: /app/config/fnt-000001.reader.json
+    entrypoint: ["bash", "docker/entrypoint.sh"]
+    command: ["runonly", "script"]
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+    profiles: ["campaign"]
+
+  client_writer:
+    image: fountainer_client
+    container_name: fnt_client_writer
+    working_dir: /app
+    volumes: *fnt_client_volumes
+    environment:
+      CLIENT_CONFIG: /app/config/fnt-000001.writer.json
+    entrypoint: ["bash", "docker/entrypoint.sh"]
+    command: ["runonly", "script"]
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+    profiles: ["campaign"]
+
+  client_logger:
+    image: fountainer_client
+    container_name: fnt_client_logger
+    working_dir: /app
+    volumes: *fnt_client_volumes
+    environment:
+      CLIENT_CONFIG: /app/config/fnt-000001.logger.json
+    entrypoint: ["bash", "docker/entrypoint.sh"]
+    command: ["runonly", "script"]
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+    profiles: ["campaign"]
+
+  client_commander:
+    image: fountainer_client
+    container_name: fnt_client_commander
+    working_dir: /app
+    volumes: *fnt_client_volumes
+    environment:
+      CLIENT_CONFIG: /app/config/fnt-000001.commander.json
+    entrypoint: ["bash", "docker/entrypoint.sh"]
+    command: ["runonly", "script"]
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+    profiles: ["campaign"]
+
+  test-server:
+    image: fountainer_client
+    build: .
+    container_name: fountainer_test_server
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ../DO_NOT_COMMIT/CA:/certs:ro
+    environment:
+      # Dummy testbed password of the server key (DO_NOT_COMMIT/CA/PASSWORDS.md)
+      TLS_KEY_PASSWORD: ${TLS_KEY_PASSWORD:-server_password}
+    command:
+      [
+        "python3", "tools/test_server.py",
+        "--host", "0.0.0.0",
+        "--port", "4443",
+        "--ca", "/certs/root/certs/ca.crt.pem",
+        "--cert", "/certs/server/server.crt.pem",
+        "--key", "/certs/server/server.key.pem",
+      ]
+
+volumes:
+  fcf_build:

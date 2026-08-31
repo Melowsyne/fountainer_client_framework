@@ -1,0 +1,53 @@
+# Build artifacts (CMake)
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+
+# Never commit keys or certificates
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+*.der
+*.srl
+certs/*
+!certs/README.md
+
+# Secrets / local configuration
+.env
+.env.*
+*.local.json
+
+# Python (tools/)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / IDE
+.cache/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs & temporary files
+*.log
+core
+core.*
