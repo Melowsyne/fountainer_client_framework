@@ -3,8 +3,7 @@
 C++20 **framework** (Boost.Asio/Beast, OpenSSL, nlohmann-json) for accessing
 Fountainer devices (ESP32-S3) over the Fountain v2.2 protocol: locally via
 **WSS + mTLS** on port 4443, and later reusable in the backend over accepted
-connections. The earlier test-program structure (`Application` + JSON
-`sequence`) has been replaced by a type-safe library API.
+connections.
 
 Firmware counterpart: `fountainer_firmware/src/network/local_server`
 
@@ -133,7 +132,7 @@ Disabled) are **client policy** and live in the overlay
 `tools/client_poll_policy.json`, not in `dp_list.def`. `generated.hpp`
 carries a schema hash (`kDatapointSchemaHash`) for mismatch detection.
 
-## Binding firmware facts
+## Firmware constraints (authoritative)
 
 - `wss://<device-ip>:4443/ws`, subprotocol `fountain`, **mTLS mandatory**,
   **text frames only**, **1 client slot** (`LOCAL_SERVER_MAX_CLIENTS=1`).
@@ -160,7 +159,7 @@ docker compose build
 docker compose run --rm client build     # compile -> fcf_build volume
 docker compose run --rm client test      # unit tests (ctest)
 
-# CLI against a device (config as before):
+# CLI against a device:
 CLIENT_CONFIG=/app/config/client.fnt-000001.json \
     docker compose run --rm client runonly info
     # ... read-all | read <name...> | write <name>=<value...> |
