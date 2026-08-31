@@ -82,27 +82,92 @@ Core principles (design concept §6):
 
 ## Architecture
 
-```
-Application (CLI / Qt / backend)
-        │
-fountainer::Client                          libfountainer_client
-  datapoints() polling() commands()          (Beast WSS transport,
-  logs() maintenance() events() raw()         dedicated IO thread)
-        │
-DatapointManager · DatapointPoller
-CommandService · LogService · EventBus      libfountainer_core
-        │                                    (asio-free, unit-testable,
-ControllerSession ── RequestDispatcher        reusable in the backend)
-  handshake · HMAC · replay · correlation
-        │
-ITextTransport ── WssTransport (dialer) | FakeTransport | Accepted… (later)
+The framework is split into two libraries: `libfountainer_core` holds the
+complete protocol and datapoint logic and **knows no socket** — it talks to
+the outside world only through the `ITextTransport` interface and injected
+clocks, which is what makes it unit-testable and reusable in a backend.
+`libfountainer_client` adds the concrete Boost.Beast WSS transport with its
+dedicated IO thread and the `fountainer::Client` facade the application sees.
+
+```mermaid
+%%{init: {"flowchart": {"curve": "linear", "rankSpacing": 55, "nodeSpacing": 45}}}%%
+flowchart TB
+    APP["Application<br/>(CLI · Qt · backend)"]
+
+    subgraph LC["libfountainer_client"]
+        CLIENT["fountainer::Client<br/>(facade, owns the IO thread)"]
+        WSST["WssTransport<br/>(Boost.Beast dialer,<br/>WSS + mTLS)"]
+    end
+
+    subgraph CORE["libfountainer_core — asio-free, unit-testable"]
+        MGR["DatapointManager<br/>(cache · stage/commit ·<br/>subscriptions)"]
+        POLL["DatapointPoller<br/>(one scheduler,<br/>coalescing, rate budget)"]
+        SVC["CommandService · LogService<br/>EventBus · Maintenance"]
+        SESS["ControllerSession<br/>(handshake · HMAC ·<br/>anti-replay)"]
+        DISP["RequestDispatcher<br/>(correlation · timeouts ·<br/>in-flight limit)"]
+        ITT["ITextTransport<br/>(interface + injected clock)"]
+    end
+
+    FAKE["FakeTransport<br/>(unit tests, no network)"]
+    DEV["Fountainer device<br/>(local WSS server :4443)"]
+
+    APP ==> CLIENT
+    CLIENT ==> MGR & POLL & SVC
+    POLL --> MGR
+    MGR --> SESS
+    SVC --> SESS
+    SESS --> DISP
+    DISP --> ITT
+    ITT --> WSST
+    ITT -.-> FAKE
+    WSST ==> DEV
+
+    classDef blackbox stroke:#000,color:#000
+    class APP,CLIENT,WSST,MGR,POLL,SVC,SESS,DISP,ITT,FAKE,DEV blackbox
+    style LC fill:#fde8e8,stroke:#000,color:#000
+    style CORE fill:#e8f4fd,stroke:#000,color:#000
+    style FAKE fill:#fdebd0,stroke:#000,color:#000
+    style DEV fill:#eee,stroke:#000,color:#000
 ```
 
-**Role inversion:** the device remains the Fountain **DEVICE** (sends `hello`,
-signs c2s); this framework is the transport client but the Fountain
-**CONTROLLER** — it sends `hello_ack` (server_nonce, kid), verifies the signed
-`ota_check` proof, answers `ota_none` (locally, `NoUpdatePolicy`), and signs
-control messages (HMAC-SHA256, anti-replay).
+*Diagram 1: Library split — the application talks to the `Client` facade;
+all protocol and datapoint logic lives in the asio-free core, which reaches
+the network only through the `ITextTransport` interface (real Beast WSS
+transport in production, `FakeTransport` in the unit tests).*
+
+### Session establishment — role inversion
+
+The device keeps its Fountain **DEVICE** role (it sends `hello` and signs
+c2s messages) even though it acts as the TCP/TLS *server*; this framework is
+the transport *client* but plays the Fountain **CONTROLLER**: it answers
+`hello_ack`, verifies the signed `ota_check` proof, replies `ota_none`
+locally (`NoUpdatePolicy`), and signs every control message (HMAC-SHA256,
+anti-replay).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Application
+    participant F as Framework (CONTROLLER)
+    participant D as Device (DEVICE)
+
+    A->>F: client.connect()
+    F->>D: TCP + mTLS handshake, WSS upgrade ("fountain")
+    D->>F: hello (device id, serial, fw version, client nonce)
+    F->>D: hello_ack (server nonce, HMAC kid)
+    D->>F: ota_check — signed session proof
+    Note over F: verify HMAC + sequence (anti-replay)
+    F->>D: ota_none (local NoUpdatePolicy)
+    Note over F,D: Fountain session RUNNING
+    F-->>A: connect() returns DeviceInfo
+    A->>F: read / write / command / logs
+    F->>D: signed control messages
+    D-->>F: dp_report / results / log_batch
+```
+
+*Diagram 2: Connection sequence — `connect()` only returns success after the
+full Fountain handshake; the firmware ignores control messages before the
+session reaches RUNNING.*
 
 ### Directories
 
@@ -120,17 +185,43 @@ control messages (HMAC-SHA256, anti-replay).
 
 ### Generated datapoint catalog
 
-The firmware's `dp_list.def` is the **single source of truth**:
+The firmware's `dp_list.def` is the **single source of truth**; the poll
+classes (Realtime 1 s / Status 5 s / Config 60 s / OnConnect / Disabled) are
+**client policy** and live in a separate overlay, not in the firmware file.
+
+```mermaid
+%%{init: {"flowchart": {"curve": "linear", "rankSpacing": 45, "nodeSpacing": 30}}}%%
+flowchart LR
+    DEF["dp_list.def<br/>(firmware repo,<br/>single source of truth)"]
+    POLICY["client_poll_policy.json<br/>(poll classes,<br/>client-side overlay)"]
+    GEN["generate_datapoints.py"]
+    HPP["generated.hpp<br/>(107 typed datapoints,<br/>schema hash, checked in)"]
+    USE["compile-time safety:<br/>RO write = compile error,<br/>schema-hash mismatch detection"]
+
+    DEF --> GEN
+    POLICY --> GEN
+    GEN --> HPP
+    HPP --> USE
+    GEN -. "--check (CI)" .-> HPP
+
+    classDef blackbox stroke:#000,color:#000
+    class DEF,POLICY,GEN,HPP,USE blackbox
+    style DEF fill:#fde8e8,stroke:#000,color:#000
+    style POLICY fill:#fdebd0,stroke:#000,color:#000
+    style HPP fill:#e8f4fd,stroke:#000,color:#000
+```
+
+*Diagram 3: Catalog generation — firmware truth plus client poll policy are
+merged into a checked-in, typed header; `--check` fails the build when the
+generated file drifts from its sources.*
 
 ```
 python3 tools/generate_datapoints.py            # regenerates generated.hpp
 python3 tools/generate_datapoints.py --check    # CI check that it is up to date
 ```
 
-The poll classes (Realtime 1 s / Status 5 s / Config 60 s / OnConnect /
-Disabled) are **client policy** and live in the overlay
-`tools/client_poll_policy.json`, not in `dp_list.def`. `generated.hpp`
-carries a schema hash (`kDatapointSchemaHash`) for mismatch detection.
+`generated.hpp` carries a schema hash (`kDatapointSchemaHash`) so client and
+firmware catalogs can be compared at runtime.
 
 ## Firmware constraints (authoritative)
 
