@@ -90,50 +90,52 @@ clocks, which is what makes it unit-testable and reusable in a backend.
 dedicated IO thread and the `fountainer::Client` facade the application sees.
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "linear", "rankSpacing": 55, "nodeSpacing": 45}}}%%
+%%{init: {"flowchart": {"curve": "linear", "rankSpacing": 60, "nodeSpacing": 40}}}%%
 flowchart TB
     APP["Application<br/>(CLI · Qt · backend)"]
 
     subgraph LC["libfountainer_client"]
         CLIENT["fountainer::Client<br/>(facade, owns the IO thread)"]
-        WSST["WssTransport<br/>(Boost.Beast dialer,<br/>WSS + mTLS)"]
     end
 
     subgraph CORE["libfountainer_core — asio-free, unit-testable"]
+        direction TB
         MGR["DatapointManager<br/>(cache · stage/commit ·<br/>subscriptions)"]
         POLL["DatapointPoller<br/>(one scheduler,<br/>coalescing, rate budget)"]
-        SVC["CommandService · LogService<br/>EventBus · Maintenance"]
+        SVC["CommandService ·<br/>LogService · EventBus ·<br/>Maintenance"]
         SESS["ControllerSession<br/>(handshake · HMAC ·<br/>anti-replay)"]
         DISP["RequestDispatcher<br/>(correlation · timeouts ·<br/>in-flight limit)"]
-        ITT["ITextTransport<br/>(interface + injected clock)"]
+        CLK["Injected clocks<br/>(deterministic tests)"]
+        MGR ~~~ POLL ~~~ SVC
+        SESS ~~~ DISP ~~~ CLK
     end
 
-    FAKE["FakeTransport<br/>(unit tests, no network)"]
+    subgraph TR["ITextTransport implementations"]
+        WSST["WssTransport<br/>(Boost.Beast, WSS + mTLS —<br/>lives in libfountainer_client)"]
+        FAKE["FakeTransport<br/>(unit tests, no network)"]
+        WSST ~~~ FAKE
+    end
+
     DEV["Fountainer device<br/>(local WSS server :4443)"]
 
-    APP ==> CLIENT
-    CLIENT ==> MGR & POLL & SVC
-    POLL --> MGR
-    MGR --> SESS
-    SVC --> SESS
-    SESS --> DISP
-    DISP --> ITT
-    ITT --> WSST
-    ITT -.-> FAKE
+    APP ==> LC
+    LC ==> CORE
+    CORE ==>|"ITextTransport interface"| TR
     WSST ==> DEV
 
     classDef blackbox stroke:#000,color:#000
-    class APP,CLIENT,WSST,MGR,POLL,SVC,SESS,DISP,ITT,FAKE,DEV blackbox
+    class APP,CLIENT,MGR,POLL,SVC,SESS,DISP,CLK,WSST,FAKE,DEV blackbox
     style LC fill:#fde8e8,stroke:#000,color:#000
     style CORE fill:#e8f4fd,stroke:#000,color:#000
-    style FAKE fill:#fdebd0,stroke:#000,color:#000
+    style TR fill:#fdebd0,stroke:#000,color:#000
     style DEV fill:#eee,stroke:#000,color:#000
 ```
 
-*Diagram 1: Library split — the application talks to the `Client` facade;
-all protocol and datapoint logic lives in the asio-free core, which reaches
-the network only through the `ITextTransport` interface (real Beast WSS
-transport in production, `FakeTransport` in the unit tests).*
+*Diagram 1: Layer stack — the application talks to the `Client` facade; all
+protocol and datapoint logic lives in the asio-free core, which reaches the
+network only through the `ITextTransport` interface. In production that
+interface is the Beast WSS transport; the unit tests swap in `FakeTransport`
+and run the identical core without any network.*
 
 ### Session establishment — role inversion
 
